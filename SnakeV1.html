@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MAG SNAKE</title>
+
+<!-- ═══════════════════════════════════════════════════════════
+     FIREBASE SDK  (do not change these lines)
+════════════════════════════════════════════════════════════ -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #080808;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    font-family: 'Courier New', Courier, monospace;
+  }
+  canvas { display: block; cursor: default; }
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg, transparent, transparent 3px,
+      rgba(0,0,0,0.04) 3px, rgba(0,0,0,0.04) 4px
+    );
+    pointer-events: none; z-index: 999;
+  }
+
+  /* ── Name Entry Overlay ──────────────────────────── */
+  #nameOverlay {
+    position: fixed; inset: 0;
+    display: none; align-items: center; justify-content: center;
+    z-index: 500;
+  }
+  #nameOverlay.active { display: flex; }
+
+  .nameBox {
+    background: rgba(6,6,6,0.97);
+    border: 1px solid #1a1a1a;
+    padding: clamp(32px, 6vw, 52px) clamp(32px, 7vw, 60px);
+    text-align: center;
+    width: min(420px, 90vw);
+  }
+  .nm-badge {
+    width: 52px; height: 52px;
+    background: #CC2020; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 22px;
+    font-size: 11px; font-weight: 700; color: #fff; letter-spacing: 1.5px;
+  }
+  .nm-title { color: #f0f0f0; font-size: clamp(12px,2.8vw,15px); letter-spacing: 6px; margin-bottom: 5px; }
+  .nm-sub   { color: #252525; font-size: clamp(8px,1.8vw,10px);  letter-spacing: 3px; margin-bottom: 32px; }
+
+  #nameInput {
+    width: 100%; background: transparent; border: none;
+    border-bottom: 1px solid #CC2020; color: #f0f0f0;
+    font-family: 'Courier New', monospace;
+    font-size: clamp(18px,4.5vw,24px); text-align: center;
+    padding: 10px 4px; outline: none; letter-spacing: 6px;
+    text-transform: uppercase; margin-bottom: 30px; display: block;
+    caret-color: #CC2020;
+  }
+  #nameInput::placeholder { color: #1e1e1e; }
+
+  #nameBtn {
+    background: #CC2020; color: #fff; border: none;
+    font-family: 'Courier New', monospace;
+    font-size: clamp(9px,2vw,11px); letter-spacing: 6px;
+    padding: 14px 0; cursor: pointer; width: 100%;
+    transition: background 0.12s;
+  }
+  #nameBtn:hover  { background: #dc2424; }
+  #nameBtn:active { background: #b81c1c; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="nameOverlay">
+  <div class="nameBox">
+    <div class="nm-badge">MAG</div>
+    <div class="nm-title">MAG SNAKE</div>
+    <div class="nm-sub">ENTER YOUR NAME TO BEGIN</div>
+    <input id="nameInput" type="text" maxlength="12" placeholder="YOUR NAME"
+           autocomplete="off" spellcheck="false">
+    <button id="nameBtn">▶&nbsp;&nbsp;PLAY</button>
+  </div>
+</div>
+
+<script>
+// ╔═══════════════════════════════════════════════════════════╗
+// ║  FIREBASE CONFIG                                         ║
+// ║  1. Go to console.firebase.google.com                   ║
+// ║  2. Create a project → Add web app                      ║
+// ║  3. Copy YOUR values into the fields below              ║
+// ║  4. Enable Realtime Database in the Firebase console    ║
+// ╚═══════════════════════════════════════════════════════════╝
+const FIREBASE_CONFIG = {
+  apiKey:            "PASTE_YOUR_API_KEY_HERE",
+  authDomain:        "PASTE_YOUR_PROJECT_ID.firebaseapp.com",
+  databaseURL:       "https://PASTE_YOUR_PROJECT_ID-default-rtdb.firebaseio.com",
+  projectId:         "PASTE_YOUR_PROJECT_ID",
+  storageBucket:     "PASTE_YOUR_PROJECT_ID.appspot.com",
+  messagingSenderId: "PASTE_YOUR_SENDER_ID",
+  appId:             "PASTE_YOUR_APP_ID"
+};
+// ════════════════════════════════════════════════════════════
+
+// ─── Firebase init ──────────────────────────────────────────
+let db = null;
+let lbCache      = [];   // live-synced leaderboard data
+let lbStatus     = 'loading'; // 'loading' | 'ready' | 'offline'
+let fbConfigured = false;
+
+(function initFirebase() {
+  try {
+    const sentinel = 'PASTE_YOUR';
+    if (Object.values(FIREBASE_CONFIG).some(v => String(v).startsWith(sentinel))) {
+      console.warn('MAG SNAKE: Firebase not configured — leaderboard running in local mode.');
+      lbStatus = 'offline';
+      lbCache  = loadLocalScores();
+      return;
+    }
+    firebase.initializeApp(FIREBASE_CONFIG);
+    db = firebase.database();
+    fbConfigured = true;
+
+    // Live listener — updates lbCache whenever DB changes
+    db.ref('mag_snake_scores')
+      .orderByChild('score')
+      .limitToLast(100)
+      .on('value', snap => {
+        const rows = [];
+        snap.forEach(child => rows.push(child.val()));
+        rows.sort((a, b) => b.score - a.score);
+        lbCache  = rows.slice(0, 50);
+        lbStatus = 'ready';
+        // Sync best into localStorage from global board
+        if (rows.length > 0) {
+          const globalBest = rows[0].score;
+          if (globalBest > loadBest()) saveBest(globalBest);
+        }
+      }, () => {
+        // DB read error — fall back to local
+        lbStatus = 'offline';
+        lbCache  = loadLocalScores();
+      });
+  } catch(e) {
+    lbStatus = 'offline';
+    lbCache  = loadLocalScores();
+    console.warn('MAG SNAKE: Firebase init failed.', e);
+  }
+})();
+
+// ═══════════════════════════════════════════════════════════
+//  SCORE STORAGE
+// ═══════════════════════════════════════════════════════════
+function loadBest() {
+  try { return parseInt(localStorage.getItem('snk2_best') || '0'); } catch(e) { return 0; }
+}
+function saveBest(v) {
+  try { localStorage.setItem('snk2_best', String(v)); } catch(e) {}
+}
+
+// Local fallback scores (used when Firebase not configured / offline)
+function loadLocalScores() {
+  try { return JSON.parse(localStorage.getItem('mag_snake_lb') || '[]'); } catch(e) { return []; }
+}
+function saveLocalScore(name, sc) {
+  if (sc <= 0) return;
+  const scores = loadLocalScores();
+  scores.push({ name, score: sc, date: fmtDate() });
+  scores.sort((a, b) => b.score - a.score);
+  try { localStorage.setItem('mag_snake_lb', JSON.stringify(scores.slice(0, 50))); } catch(e) {}
+}
+
+// Push score — Firebase if connected, localStorage otherwise
+function saveScore(name, sc) {
+  if (sc <= 0) return;
+  const entry = { name: (name || 'PLAYER').toUpperCase().substring(0,12), score: sc, date: fmtDate(), ts: Date.now() };
+  if (db && fbConfigured) {
+    db.ref('mag_snake_scores').push(entry).catch(() => saveLocalScore(entry.name, sc));
+  } else {
+    saveLocalScore(entry.name, sc);
+    lbCache = loadLocalScores();
+  }
+}
+
+function getScoreRank(sc) {
+  let rank = 1;
+  for (const s of lbCache) { if (s.score > sc) rank++; }
+  return rank;
+}
+
+function fmtDate() {
+  return new Date().toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'2-digit' });
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CANVAS & GAME SETUP
+// ═══════════════════════════════════════════════════════════
+const canvas      = document.getElementById('c');
+const ctx         = canvas.getContext('2d');
+const nameOverlay = document.getElementById('nameOverlay');
+const nameInput   = document.getElementById('nameInput');
+const nameBtn     = document.getElementById('nameBtn');
+
+const COLS = 20, ROWS = 20;
+let SIZE = 500;
+
+function resize() {
+  SIZE = Math.floor(Math.min(window.innerWidth, window.innerHeight) * 0.94);
+  SIZE = Math.max(SIZE, 280);
+  canvas.width = SIZE; canvas.height = SIZE;
+}
+resize();
+window.addEventListener('resize', resize);
+
+const C     = () => Math.floor((SIZE - HUD_H()) / ROWS);
+const HUD_H = () => Math.floor(SIZE * 0.1);
+
+let STATE      = 'menu';
+let playerName = 'PLAYER';
+
+let snake, dir, nextDir, food, bonus, bonusTick;
+let score, best, level;
+let flashTick, deathAnim, lastStep, gameTick;
+let scoreSaved = false;
+
+function SPEED() { return Math.max(50, 135 - (level - 1) * 8); }
+
+// ═══════════════════════════════════════════════════════════
+//  AUDIO
+// ═══════════════════════════════════════════════════════════
+let AC = null, musicPlaying = false, musicNodes = [], musicGain = null, musicEnabled = true;
+
+function getAC() {
+  if (!AC) AC = new (window.AudioContext || window.webkitAudioContext)();
+  if (AC.state === 'suspended') AC.resume();
+  return AC;
+}
+function tone(freq, startT, dur, type, vol) {
+  try {
+    const a=getAC(), o=a.createOscillator(), g=a.createGain();
+    o.connect(g); g.connect(a.destination);
+    o.type=type; o.frequency.value=freq;
+    g.gain.setValueAtTime(vol,startT);
+    g.gain.exponentialRampToValueAtTime(0.0001,startT+dur);
+    o.start(startT); o.stop(startT+dur+0.01);
+  } catch(e){}
+}
+function sfxEat(len) {
+  const a=getAC(),t=a.currentTime,f=220+len*15;
+  tone(f,t,0.06,'square',0.065); tone(f*1.5,t+0.04,0.06,'square',0.04);
+}
+function sfxBonus() {
+  const a=getAC(),t=a.currentTime;
+  [500,700,900,1100].forEach((f,i)=>tone(f,t+i*0.07,0.09,'sine',0.055));
+}
+function sfxDie() {
+  try {
+    const a=getAC(),t=a.currentTime;
+    const buf=a.createBuffer(1,Math.floor(a.sampleRate*0.55),a.sampleRate);
+    const d=buf.getChannelData(0);
+    for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/(a.sampleRate*0.07));
+    const src=a.createBufferSource(),lp=a.createBiquadFilter(),g=a.createGain();
+    src.buffer=buf; lp.type='lowpass'; lp.frequency.value=450;
+    src.connect(lp); lp.connect(g); g.connect(a.destination);
+    g.gain.setValueAtTime(0.4,t); g.gain.exponentialRampToValueAtTime(0.0001,t+0.55);
+    src.start(t); src.stop(t+0.56);
+  } catch(e){}
+}
+function startMusic() {
+  if(!musicEnabled||musicPlaying) return;
+  try {
+    const a=getAC();
+    musicGain=a.createGain(); musicGain.gain.value=0.055; musicGain.connect(a.destination);
+    musicPlaying=true;
+    const scale=[130.81,146.83,174.61,196,220,261.63,293.66,349.23];
+    const mel=[0,2,4,7,4,2,0,2,1,3,5,6,5,3,1,2,0,4,2,6,4,0,3,5,2,7,5,3,1,4,2,0];
+    const BPM=108,beat=60/BPM;
+    function noteM(freq,t,dur,type,vol){
+      try {
+        const o=a.createOscillator(),g=a.createGain();
+        o.connect(g); g.connect(musicGain);
+        o.type=type; o.frequency.value=freq;
+        g.gain.setValueAtTime(0,t); g.gain.linearRampToValueAtTime(vol,t+0.015);
+        g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+        o.start(t); o.stop(t+dur+0.02); musicNodes.push(o);
+      } catch(e){}
+    }
+    function hihat(t){
+      try {
+        const nb=a.createBuffer(1,256,a.sampleRate),nd=nb.getChannelData(0);
+        for(let k=0;k<256;k++) nd[k]=Math.random()*2-1;
+        const ns=a.createBufferSource(),hf=a.createBiquadFilter(),ng=a.createGain();
+        ns.buffer=nb; hf.type='highpass'; hf.frequency.value=7000;
+        ns.connect(hf); hf.connect(ng); ng.connect(musicGain);
+        ng.gain.setValueAtTime(0.018,t); ng.gain.exponentialRampToValueAtTime(0.0001,t+0.035);
+        ns.start(t); ns.stop(t+0.04); musicNodes.push(ns);
+      } catch(e){}
+    }
+    function loop(){
+      if(!musicPlaying) return;
+      const now=a.currentTime,bars=16;
+      for(let i=0;i<bars;i++){
+        const t=now+i*beat;
+        noteM(scale[mel[i%mel.length]]*4,t,beat*0.65,'triangle',0.04);
+        if(i%2===0) noteM(scale[mel[(i+4)%mel.length]]*2,t,beat*1.2,'sine',0.025);
+        if(i%4===0) noteM(scale[0],t,beat*0.8,'sawtooth',0.045);
+        if(i%2===1) hihat(t);
+      }
+      setTimeout(loop,(bars*beat-0.3)*1000);
+    }
+    loop();
+  } catch(e){ musicPlaying=false; }
+}
+function stopMusic(){
+  musicPlaying=false;
+  musicNodes.forEach(n=>{try{n.stop();}catch(e){}});
+  musicNodes=[];
+  if(musicGain){try{musicGain.disconnect();}catch(e){} musicGain=null;}
+}
+
+// ═══════════════════════════════════════════════════════════
+//  GAME LOGIC
+// ═══════════════════════════════════════════════════════════
+function initGame() {
+  const cx=Math.floor(COLS/2),cy=Math.floor(ROWS/2);
+  snake=[{x:cx,y:cy},{x:cx-1,y:cy},{x:cx-2,y:cy}];
+  dir={x:1,y:0}; nextDir={x:1,y:0};
+  score=0; level=1; best=loadBest();
+  flashTick=0; deathAnim=0; gameTick=0;
+  bonus=null; bonusTick=0; lastStep=performance.now();
+  scoreSaved=false;
+  placeFood();
+}
+function placeFood() {
+  let p,t=0;
+  do{p={x:rnd(COLS),y:rnd(ROWS)};t++;}while(onSnake(p)&&t<300);
+  food=p;
+}
+function placeBonus() {
+  let p,t=0;
+  do{p={x:rnd(COLS),y:rnd(ROWS)};t++;}while((onSnake(p)||same(p,food))&&t<300);
+  bonus=p; bonusTick=90;
+}
+function rnd(n)    { return Math.floor(Math.random()*n); }
+function onSnake(p){ return snake.some(s=>s.x===p.x&&s.y===p.y); }
+function same(a,b) { return a&&b&&a.x===b.x&&a.y===b.y; }
+
+function gameStep() {
+  dir={...nextDir};
+  const head={
+    x:((snake[0].x+dir.x)+COLS)%COLS,
+    y:((snake[0].y+dir.y)+ROWS)%ROWS
+  };
+  for(let i=1;i<snake.length;i++){
+    if(snake[i].x===head.x&&snake[i].y===head.y){
+      sfxDie(); stopMusic();
+      if(score>best){best=score;saveBest(best);}
+      if(!scoreSaved){saveScore(playerName,score);scoreSaved=true;}
+      STATE='dead'; deathAnim=0; return;
+    }
+  }
+  snake.unshift(head);
+  if(same(head,food)){
+    score+=10*level; flashTick=6;
+    if(score>best){best=score;saveBest(best);}
+    level=Math.min(10,1+Math.floor(score/80));
+    sfxEat(snake.length); placeFood();
+    if(!bonus&&Math.random()<0.22) placeBonus();
+  } else if(same(head,bonus)){
+    score+=50*level; flashTick=10;
+    if(score>best){best=score;saveBest(best);}
+    level=Math.min(10,1+Math.floor(score/80));
+    sfxBonus(); bonus=null;
+  } else {
+    snake.pop();
+  }
+  if(bonus){bonusTick--;if(bonusTick<=0)bonus=null;}
+  gameTick++;
+}
+
+// ═══════════════════════════════════════════════════════════
+//  DRAWING
+// ═══════════════════════════════════════════════════════════
+function rrect(x,y,w,h,r){
+  r=Math.min(r,w/2,h/2);
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.lineTo(x+w-r,y);   ctx.arcTo(x+w,y,   x+w,y+r,   r);
+  ctx.lineTo(x+w,y+h-r); ctx.arcTo(x+w,y+h, x+w-r,y+h, r);
+  ctx.lineTo(x+r,y+h);   ctx.arcTo(x,y+h,   x,y+h-r,   r);
+  ctx.lineTo(x,y+r);     ctx.arcTo(x,y,     x+r,y,      r);
+  ctx.closePath();
+}
+function drawBg(){
+  ctx.fillStyle='#080808'; ctx.fillRect(0,0,SIZE,SIZE);
+  const cell=C(),hh=HUD_H();
+  // Subtle alternating cell fill
+  ctx.fillStyle='rgba(255,255,255,0.013)';
+  for(let i=0;i<COLS;i++) for(let j=0;j<ROWS;j++)
+    if((i+j)%2===0) ctx.fillRect(i*cell, hh+j*cell, cell, cell);
+
+  // Translucent gray grid lines
+  ctx.strokeStyle='rgba(180,180,180,0.09)'; ctx.lineWidth=0.8;
+  for(let i=0;i<=COLS;i++){const px=i*cell;ctx.beginPath();ctx.moveTo(px,hh);ctx.lineTo(px,SIZE);ctx.stroke();}
+  for(let j=0;j<=ROWS;j++){const py=hh+j*cell;ctx.beginPath();ctx.moveTo(0,py);ctx.lineTo(SIZE,py);ctx.stroke();}
+
+  // ── Play-area border ─────────────────────────────────────
+  const bw = Math.max(1.5, cell * 0.08); // border thickness scales with cell
+  const arenaX = 0, arenaY = hh;
+  const arenaW = COLS * cell, arenaH = ROWS * cell;
+
+  // Outer glow
+  ctx.save();
+  ctx.shadowColor = 'rgba(204,32,32,0.18)';
+  ctx.shadowBlur  = cell * 0.9;
+  ctx.strokeStyle = '#CC2020';
+  ctx.lineWidth   = bw;
+  ctx.strokeRect(arenaX + bw/2, arenaY + bw/2, arenaW - bw, arenaH - bw);
+  ctx.restore();
+
+  // Crisp inner line on top of glow
+  ctx.strokeStyle = '#3a0808';
+  ctx.lineWidth   = bw * 0.5;
+  ctx.strokeRect(arenaX + bw/2, arenaY + bw/2, arenaW - bw, arenaH - bw);
+
+  // Four corner accents
+  const cLen = cell * 1.1;
+  ctx.strokeStyle = '#CC2020';
+  ctx.lineWidth   = bw * 1.6;
+  ctx.lineCap     = 'square';
+  [
+    [arenaX, arenaY,         1,  1],
+    [arenaX+arenaW, arenaY, -1,  1],
+    [arenaX, arenaY+arenaH,  1, -1],
+    [arenaX+arenaW, arenaY+arenaH, -1, -1]
+  ].forEach(([x,y,sx,sy])=>{
+    ctx.beginPath();
+    ctx.moveTo(x + sx*bw/2, y + sy*cLen);
+    ctx.lineTo(x + sx*bw/2, y + sy*bw/2);
+    ctx.lineTo(x + sx*cLen, y + sy*bw/2);
+    ctx.stroke();
+  });
+}
+function drawHUD(){
+  const hh=HUD_H(),W=SIZE;
+  ctx.fillStyle='#0c0c0c'; ctx.fillRect(0,0,W,hh);
+  ctx.strokeStyle='#181818'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(0,hh); ctx.lineTo(W,hh); ctx.stroke();
+  const fs=Math.floor(hh*0.36),lfs=Math.floor(fs*0.38),cy=hh*0.40;
+  ctx.textBaseline='middle';
+  // Score
+  ctx.font=`700 ${fs}px 'Courier New',monospace`; ctx.fillStyle='#f0f0f0'; ctx.textAlign='left';
+  ctx.fillText(String(score).padStart(6,'0'),W*0.03,cy);
+  ctx.font=`${lfs}px 'Courier New',monospace`; ctx.fillStyle='#CC2020'; ctx.textAlign='left';
+  ctx.fillText('MAG PTS',W*0.03,cy+fs*0.72);
+  // Centre
+  ctx.font=`${Math.floor(fs*0.60)}px 'Courier New',monospace`; ctx.fillStyle='#2e2e2e'; ctx.textAlign='center';
+  ctx.fillText('LVL '+level+(musicEnabled?'  ♪':'  ♩'),W*0.5,hh*0.36);
+  if(playerName){
+    ctx.font=`${Math.floor(lfs*0.95)}px 'Courier New',monospace`; ctx.fillStyle='#1e1e1e'; ctx.textAlign='center';
+    ctx.fillText(playerName.toUpperCase(),W*0.5,hh*0.76);
+  }
+  // Best
+  ctx.font=`700 ${fs}px 'Courier New',monospace`; ctx.fillStyle='#303030'; ctx.textAlign='right';
+  ctx.fillText(String(best).padStart(6,'0'),W*0.97,cy);
+  ctx.font=`${lfs}px 'Courier New',monospace`; ctx.fillStyle='#242424'; ctx.textAlign='right';
+  ctx.fillText('BEST',W*0.97,cy+fs*0.72);
+}
+function drawFood(){
+  const cell=C(),hh=HUD_H();
+  const fx=food.x*cell+cell/2,fy=hh+food.y*cell+cell/2,fr=cell*0.30;
+  const grd=ctx.createRadialGradient(fx,fy,0,fx,fy,cell*0.60);
+  grd.addColorStop(0,'rgba(204,32,32,0.40)'); grd.addColorStop(1,'rgba(204,32,32,0)');
+  ctx.beginPath(); ctx.arc(fx,fy,cell*0.60,0,Math.PI*2); ctx.fillStyle=grd; ctx.fill();
+  ctx.beginPath(); ctx.arc(fx,fy,fr,0,Math.PI*2); ctx.fillStyle='#CC2020'; ctx.fill();
+  ctx.beginPath(); ctx.arc(fx,fy,fr,0,Math.PI*2); ctx.strokeStyle='rgba(0,0,0,0.3)'; ctx.lineWidth=0.8; ctx.stroke();
+  ctx.beginPath(); ctx.arc(fx-fr*0.26,fy-fr*0.26,fr*0.30,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,0.22)'; ctx.fill();
+  const tfs=Math.max(5,Math.floor(cell*0.22));
+  ctx.save(); ctx.font=`700 ${tfs}px 'Courier New',monospace`;
+  ctx.fillStyle='#ffffff'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('MAG',fx,fy+tfs*0.04); ctx.restore();
+}
+function drawBonus(){
+  if(!bonus) return;
+  const cell=C(),hh=HUD_H();
+  const bx=bonus.x*cell+cell/2,by=hh+bonus.y*cell+cell/2;
+  const spin=performance.now()/280;
+  const pr=cell*0.27*(0.87+0.13*Math.sin(performance.now()/140));
+  const alpha=bonusTick<28?Math.abs(Math.sin(performance.now()/70)):1;
+  ctx.save(); ctx.globalAlpha=alpha; ctx.translate(bx,by); ctx.rotate(spin);
+  ctx.beginPath(); ctx.moveTo(0,-pr); ctx.lineTo(pr,0); ctx.lineTo(0,pr); ctx.lineTo(-pr,0); ctx.closePath();
+  ctx.fillStyle='rgba(255,255,255,0.1)'; ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,0.8)'; ctx.lineWidth=1.3; ctx.stroke();
+  ctx.globalAlpha=1; ctx.restore();
+  ctx.font=`700 ${Math.floor(cell*0.3)}px 'Courier New',monospace`;
+  ctx.fillStyle=`rgba(255,255,255,${alpha*0.65})`;
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('×5',bx,by);
+}
+function drawSnakeSegmentMAG(cx, cy, radius, alpha){
+  // White circular MAG badge — used for every body segment
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // Subtle glow
+  const grd = ctx.createRadialGradient(cx,cy,0,cx,cy,radius*1.55);
+  grd.addColorStop(0,'rgba(255,255,255,0.10)');
+  grd.addColorStop(1,'rgba(255,255,255,0)');
+  ctx.beginPath(); ctx.arc(cx,cy,radius*1.55,0,Math.PI*2);
+  ctx.fillStyle=grd; ctx.fill();
+
+  // White circle
+  ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2);
+  ctx.fillStyle='#f0f0f0'; ctx.fill();
+
+  // Thin dark ring
+  ctx.beginPath(); ctx.arc(cx,cy,radius,0,Math.PI*2);
+  ctx.strokeStyle='rgba(0,0,0,0.18)'; ctx.lineWidth=0.7; ctx.stroke();
+
+  // Shine
+  ctx.beginPath(); ctx.arc(cx-radius*0.25,cy-radius*0.25,radius*0.28,0,Math.PI*2);
+  ctx.fillStyle='rgba(255,255,255,0.45)'; ctx.fill();
+
+  // "MAG" text in dark
+  const tfs = Math.max(4, Math.floor(radius * 0.72));
+  ctx.font=`700 ${tfs}px 'Courier New',monospace`;
+  ctx.fillStyle='rgba(20,20,20,0.75)';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('MAG', cx, cy + tfs*0.05);
+
+  ctx.restore();
+}
+
+function drawSnake(){
+  const cell=C(),hh=HUD_H();
+  for(let i=snake.length-1;i>=0;i--){
+    const s=snake[i];
+    const scx=s.x*cell+cell/2, scy=hh+s.y*cell+cell/2;
+
+    if(i===0){
+      // ── HEAD: white MAG badge with eyes on top ──
+      const headR = cell*0.42;
+      const fl    = flashTick>0;
+
+      // Head circle
+      ctx.save();
+      if(fl){ ctx.shadowColor='rgba(255,255,255,0.6)'; ctx.shadowBlur=cell*0.6; }
+      ctx.beginPath(); ctx.arc(scx,scy,headR,0,Math.PI*2);
+      ctx.fillStyle=fl?'#ffffff':'#f2f2f2'; ctx.fill();
+      ctx.beginPath(); ctx.arc(scx,scy,headR,0,Math.PI*2);
+      ctx.strokeStyle='rgba(0,0,0,0.15)'; ctx.lineWidth=0.8; ctx.stroke();
+      ctx.restore();
+
+      // "MAG" on head
+      const hfs = Math.max(4, Math.floor(cell*0.28));
+      ctx.font=`700 ${hfs}px 'Courier New',monospace`;
+      ctx.fillStyle='rgba(20,20,20,0.55)';
+      ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText('MAG',scx,scy+hfs*0.05);
+
+      // Eyes
+      const er=cell*0.080, eo=cell*0.19;
+      let e1x,e1y,e2x,e2y;
+      if(dir.x===1)       {e1x=scx+eo;e1y=scy-eo;e2x=scx+eo;e2y=scy+eo;}
+      else if(dir.x===-1) {e1x=scx-eo;e1y=scy-eo;e2x=scx-eo;e2y=scy+eo;}
+      else if(dir.y===-1) {e1x=scx-eo;e1y=scy-eo;e2x=scx+eo;e2y=scy-eo;}
+      else                {e1x=scx-eo;e1y=scy+eo;e2x=scx+eo;e2y=scy+eo;}
+      [[e1x,e1y],[e2x,e2y]].forEach(([ex,ey])=>{
+        ctx.fillStyle='#111'; ctx.beginPath(); ctx.arc(ex,ey,er,0,Math.PI*2); ctx.fill();
+        ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(ex+er*0.3,ey-er*0.3,er*0.38,0,Math.PI*2); ctx.fill();
+      });
+
+    } else {
+      // ── BODY: white MAG logos fading toward tail ──
+      const t      = i / snake.length;               // 0=neck, 1=tail
+      const radius = cell * (0.40 - t*0.08);         // slightly shrinks toward tail
+      const alpha  = (flashTick>0 && i<5)
+                       ? Math.min(1, 0.55 + (1-t)*0.45 + flashTick*0.06)
+                       : 0.55 + (1-t)*0.45;          // neck bright, tail dim
+      drawSnakeSegmentMAG(scx, scy, radius, alpha);
+    }
+  }
+  if(flashTick>0) flashTick--;
+}
+function drawLogo(cx,cy,r){
+  ctx.save(); ctx.translate(cx,cy);
+  const sw=r*0.15;
+  ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.strokeStyle='#181818'; ctx.lineWidth=1; ctx.stroke();
+  ctx.lineWidth=sw; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#ddd';
+  ctx.beginPath();
+  ctx.moveTo(-r*0.05,r*0.68);
+  ctx.bezierCurveTo(-r*0.6,r*0.55,-r*0.6,r*0.2,-r*0.05,r*0.1);
+  ctx.bezierCurveTo(r*0.55,0,r*0.55,-r*0.35,0,-r*0.45);
+  ctx.bezierCurveTo(-r*0.5,-r*0.55,-r*0.5,-r*0.75,0,-r*0.78);
+  ctx.stroke();
+  const hx=r*0.38,hy=-r*0.72;
+  ctx.beginPath(); ctx.arc(hx,hy,sw*1.1,0,Math.PI*2); ctx.fillStyle='#ddd'; ctx.fill();
+  ctx.beginPath(); ctx.arc(hx+sw*0.5,hy-sw*0.4,sw*0.28,0,Math.PI*2); ctx.fillStyle='#080808'; ctx.fill();
+  ctx.beginPath(); ctx.arc(hx+sw*0.6,hy-sw*0.5,sw*0.1,0,Math.PI*2);  ctx.fillStyle='#fff'; ctx.fill();
+  ctx.lineWidth=sw*0.25; ctx.strokeStyle='#bbb';
+  ctx.beginPath();
+  ctx.moveTo(hx+sw*1.1,hy);         ctx.lineTo(hx+sw*2.0,hy-sw*0.2);
+  ctx.moveTo(hx+sw*2.0,hy-sw*0.2);  ctx.lineTo(hx+sw*2.5,hy-sw*0.6);
+  ctx.moveTo(hx+sw*2.0,hy-sw*0.2);  ctx.lineTo(hx+sw*2.5,hy+sw*0.1);
+  ctx.stroke(); ctx.restore();
+}
+
+// ═══════════════════════════════════════════════════════════
+//  SCREENS
+// ═══════════════════════════════════════════════════════════
+function renderMenu(){
+  const W=SIZE;
+  ctx.fillStyle='#080808'; ctx.fillRect(0,0,W,W);
+  ctx.strokeStyle='#0e0e0e'; ctx.lineWidth=0.5;
+  const cell=Math.floor(W/22);
+  for(let i=0;i<=22;i++){
+    ctx.beginPath();ctx.moveTo(i*cell,0);ctx.lineTo(i*cell,W);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,i*cell);ctx.lineTo(W,i*cell);ctx.stroke();
+  }
+  const t=performance.now()/1000;
+  for(let i=0;i<12;i++){
+    const ang=t*0.45+i*0.5;
+    const px=W/2+Math.cos(ang)*W*0.3,py=W/2+Math.sin(ang*0.65)*W*0.22;
+    const al=(1-i/12)*0.08,rad=Math.floor(W/22)*0.45*(1-i/12*0.3);
+    ctx.beginPath(); ctx.arc(px,py,rad,0,Math.PI*2);
+    ctx.fillStyle=`rgba(255,255,255,${al})`; ctx.fill();
+  }
+  drawLogo(W/2,W*0.27,W*0.14);
+  ctx.font=`700 ${Math.floor(W*0.105)}px 'Courier New',monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillStyle='#f0f0f0';
+  ctx.fillText('SNAKE',W/2,W*0.48);
+  ctx.font=`${Math.floor(W*0.028)}px 'Courier New',monospace`; ctx.fillStyle='#2a2a2a';
+  ctx.fillText('— MAG EDITION —',W/2,W*0.565);
+  if(Math.sin(performance.now()/480)>0){
+    ctx.font=`${Math.floor(W*0.038)}px 'Courier New',monospace`; ctx.fillStyle='#666';
+    ctx.fillText('PRESS SPACE OR CLICK',W/2,W*0.67);
+  }
+  if(best>0){
+    ctx.font=`${Math.floor(W*0.028)}px 'Courier New',monospace`; ctx.fillStyle='#303030';
+    ctx.fillText('BEST  '+best+'  MAG PTS',W/2,W*0.765);
+  }
+  ctx.font=`${Math.floor(W*0.022)}px 'Courier New',monospace`; ctx.fillStyle='#1e1e1e';
+  ctx.fillText('ARROWS / WASD  ·  P = PAUSE  ·  M = MUSIC',W/2,W*0.86);
+  // Firebase status dot
+  const dotCol = lbStatus==='ready' ? '#22aa44' : lbStatus==='offline' ? '#886600' : '#444444';
+  ctx.beginPath(); ctx.arc(W*0.93,W*0.924,W*0.008,0,Math.PI*2); ctx.fillStyle=dotCol; ctx.fill();
+  ctx.font=`${Math.floor(W*0.024)}px 'Courier New',monospace`; ctx.fillStyle='#CC2020';
+  ctx.globalAlpha=0.55+0.45*Math.abs(Math.sin(performance.now()/900));
+  ctx.fillText('L = LEADERBOARD',W/2,W*0.925); ctx.globalAlpha=1;
+}
+
+function renderGame(){
+  drawBg(); drawHUD(); drawFood(); drawBonus(); drawSnake();
+  ctx.font=`${Math.floor(C()*0.5)}px 'Courier New',monospace`; ctx.fillStyle='#1c1c1c';
+  ctx.textAlign='right'; ctx.textBaseline='bottom'; ctx.fillText('P = PAUSE',SIZE*0.975,SIZE-3);
+}
+
+function renderPaused(){
+  renderGame();
+  const W=SIZE;
+  ctx.fillStyle='rgba(8,8,8,0.85)'; ctx.fillRect(0,0,W,W);
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font=`700 ${Math.floor(W*0.095)}px 'Courier New',monospace`; ctx.fillStyle='#2e2e2e';
+  ctx.fillText('PAUSED',W/2,W*0.43);
+  if(Math.sin(performance.now()/550)>0){
+    ctx.font=`${Math.floor(W*0.036)}px 'Courier New',monospace`; ctx.fillStyle='#3c3c3c';
+    ctx.fillText('P  TO  RESUME',W/2,W*0.565);
+  }
+  ctx.font=`${Math.floor(W*0.028)}px 'Courier New',monospace`; ctx.fillStyle='#252525';
+  ctx.fillText('MAG PTS  '+score,W/2,W*0.66);
+}
+
+function renderDead(){
+  renderGame();
+  if(deathAnim<8){ctx.fillStyle=`rgba(255,255,255,${deathAnim%2===0?0.3:0})`;ctx.fillRect(0,0,SIZE,SIZE);}
+  const oa=deathAnim>=6?Math.min(0.9,(deathAnim-6)*0.09):0;
+  if(oa>0){ctx.fillStyle=`rgba(8,8,8,${oa})`;ctx.fillRect(0,0,SIZE,SIZE);}
+  if(deathAnim>=18){
+    const W=SIZE;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font=`${Math.floor(W*0.030)}px 'Courier New',monospace`; ctx.fillStyle='#CC2020';
+    ctx.fillText(playerName.toUpperCase(),W/2,W*0.27);
+    ctx.font=`700 ${Math.floor(W*0.098)}px 'Courier New',monospace`; ctx.fillStyle='#e8e8e8';
+    ctx.fillText('GAME OVER',W/2,W*0.38);
+    ctx.font=`${Math.floor(W*0.044)}px 'Courier New',monospace`; ctx.fillStyle='#555';
+    ctx.fillText(score+'  MAG PTS',W/2,W*0.49);
+    const rank=getScoreRank(score);
+    ctx.font=`${Math.floor(W*0.027)}px 'Courier New',monospace`; ctx.fillStyle='#CC2020';
+    ctx.fillText('RANK  #'+rank+'  ON LEADERBOARD',W/2,W*0.565);
+    const isNew=score>0&&score>=best;
+    ctx.font=`${Math.floor(W*0.028)}px 'Courier New',monospace`;
+    ctx.fillStyle=isNew?'#888':'#2e2e2e';
+    ctx.fillText(isNew?'✦  NEW BEST  '+best+'  ✦':'BEST  '+best,W/2,W*0.635);
+    if(Math.sin(performance.now()/480)>0){
+      ctx.font=`${Math.floor(W*0.034)}px 'Courier New',monospace`; ctx.fillStyle='#484848';
+      ctx.fillText('SPACE / CLICK  TO  RETRY',W/2,W*0.735);
+    }
+    ctx.font=`${Math.floor(W*0.024)}px 'Courier New',monospace`; ctx.fillStyle='#282828';
+    ctx.fillText('ESC = MENU  ·  L = LEADERBOARD',W/2,W*0.83);
+  }
+  deathAnim++;
+}
+
+function renderLeaderboard(){
+  const W=SIZE;
+  ctx.fillStyle='#080808'; ctx.fillRect(0,0,W,W);
+  ctx.strokeStyle='#0a0a0a'; ctx.lineWidth=0.5;
+  const gc=Math.floor(W/22);
+  for(let i=0;i<=22;i++){
+    ctx.beginPath();ctx.moveTo(i*gc,0);ctx.lineTo(i*gc,W);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,i*gc);ctx.lineTo(W,i*gc);ctx.stroke();
+  }
+
+  // MAG badge
+  const br=W*0.048;
+  const grdB=ctx.createRadialGradient(W/2,W*0.088,0,W/2,W*0.088,br*1.6);
+  grdB.addColorStop(0,'rgba(204,32,32,0.25)'); grdB.addColorStop(1,'rgba(204,32,32,0)');
+  ctx.beginPath(); ctx.arc(W/2,W*0.088,br*1.6,0,Math.PI*2); ctx.fillStyle=grdB; ctx.fill();
+  ctx.beginPath(); ctx.arc(W/2,W*0.088,br,0,Math.PI*2); ctx.fillStyle='#CC2020'; ctx.fill();
+  ctx.font=`700 ${Math.floor(br*0.65)}px 'Courier New',monospace`;
+  ctx.fillStyle='#fff'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('MAG',W/2,W*0.088);
+
+  // Title + Firebase status
+  ctx.font=`700 ${Math.floor(W*0.055)}px 'Courier New',monospace`;
+  ctx.fillStyle='#f0f0f0'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('LEADERBOARD',W/2,W*0.168);
+
+  // Status line
+  const statusLabel = lbStatus==='ready'   ? '● LIVE — GLOBAL SCORES'
+                    : lbStatus==='loading'  ? '◌ CONNECTING TO FIREBASE…'
+                    :                         '◎ LOCAL MODE — FIREBASE NOT CONFIGURED';
+  const statusCol   = lbStatus==='ready'   ? '#1a3a22'
+                    : lbStatus==='loading'  ? '#1a1a2e'
+                    :                         '#2a2000';
+  ctx.font=`${Math.floor(W*0.018)}px 'Courier New',monospace`;
+  ctx.fillStyle=statusCol; ctx.textAlign='center';
+  ctx.fillText(statusLabel,W/2,W*0.222);
+
+  // Divider
+  ctx.strokeStyle='#161616'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(W*0.08,W*0.250); ctx.lineTo(W*0.92,W*0.250); ctx.stroke();
+
+  const scores=lbCache;
+
+  if(lbStatus==='loading'&&scores.length===0){
+    const pulse=0.4+0.6*Math.abs(Math.sin(performance.now()/700));
+    ctx.globalAlpha=pulse;
+    ctx.font=`${Math.floor(W*0.033)}px 'Courier New',monospace`;
+    ctx.fillStyle='#1c1c1c'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('LOADING…',W/2,W*0.50);
+    ctx.globalAlpha=1;
+  } else if(scores.length===0){
+    ctx.font=`${Math.floor(W*0.033)}px 'Courier New',monospace`;
+    ctx.fillStyle='#1c1c1c'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('NO SCORES YET',W/2,W*0.50);
+    ctx.font=`${Math.floor(W*0.022)}px 'Courier New',monospace`; ctx.fillStyle='#141414';
+    ctx.fillText('PLAY A GAME TO APPEAR HERE',W/2,W*0.56);
+  } else {
+    const maxShow=Math.min(10,scores.length);
+    const startY=W*0.315,rowH=W*0.058;
+    for(let i=0;i<maxShow;i++){
+      const s=scores[i],y=startY+i*rowH;
+      const i1=i===0,i2=i===1,i3=i===2;
+      if(i%2===0){
+        ctx.fillStyle='rgba(255,255,255,0.016)';
+        rrect(W*0.055,y-rowH*0.44,W*0.89,rowH*0.88,2); ctx.fill();
+      }
+      if(i1||i2||i3){
+        const barCol=i1?'#CC2020':i2?'#606060':'#5a4020';
+        ctx.fillStyle=barCol; ctx.fillRect(W*0.055,y-rowH*0.44,2,rowH*0.88);
+      }
+      const fsc=Math.floor(W*(i1?0.033:0.030));
+      const rankColor=i1?'#CC2020':i2?'#707070':i3?'#7a5c2e':'#282828';
+      const nameColor=i1?'#f0f0f0':i<3?'#888':'#2e2e2e';
+      const scoreColor=i1?'#CC2020':i<3?'#505050':'#242424';
+      ctx.font=`700 ${fsc}px 'Courier New',monospace`;
+      ctx.textAlign='left'; ctx.textBaseline='middle';
+      ctx.fillStyle=rankColor; ctx.fillText(`#${i+1}`,W*0.076,y);
+      ctx.fillStyle=nameColor; ctx.fillText(s.name.substring(0,12),W*0.165,y);
+      if(s.date){
+        ctx.font=`${Math.floor(fsc*0.56)}px 'Courier New',monospace`;
+        ctx.fillStyle='#181818'; ctx.fillText(s.date,W*0.165,y+fsc*0.73);
+      }
+      ctx.font=`700 ${fsc}px 'Courier New',monospace`;
+      ctx.textAlign='right'; ctx.textBaseline='middle';
+      ctx.fillStyle=scoreColor; ctx.fillText(String(s.score).padStart(6,'0'),W*0.915,y);
+      if(i1){
+        ctx.font=`${Math.floor(fsc*0.8)}px 'Courier New',monospace`;
+        ctx.fillStyle='#CC2020'; ctx.textAlign='left';
+        ctx.fillText('★',W*0.930,y);
+      }
+    }
+    if(scores.length>10){
+      ctx.font=`${Math.floor(W*0.019)}px 'Courier New',monospace`;
+      ctx.fillStyle='#161616'; ctx.textAlign='center';
+      ctx.fillText(`+ ${scores.length-10} MORE PLAYERS`,W/2,startY+10.2*rowH);
+    }
+  }
+
+  ctx.font=`${Math.floor(W*0.024)}px 'Courier New',monospace`;
+  ctx.fillStyle='#1c1c1c'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText('ESC = MENU  ·  SPACE = PLAY',W/2,W*0.958);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  MAIN LOOP
+// ═══════════════════════════════════════════════════════════
+function loop(ts){
+  requestAnimationFrame(loop);
+  if     (STATE==='playing')     {if(ts-lastStep>=SPEED()){lastStep=ts;gameStep();}renderGame();}
+  else if(STATE==='menu')        {renderMenu();}
+  else if(STATE==='paused')      {renderPaused();}
+  else if(STATE==='dead')        {renderDead();}
+  else if(STATE==='leaderboard') {renderLeaderboard();}
+}
+requestAnimationFrame(loop);
+
+// ═══════════════════════════════════════════════════════════
+//  NAME ENTRY
+// ═══════════════════════════════════════════════════════════
+function showNameEntry(){
+  nameOverlay.classList.add('active');
+  nameInput.value='';
+  setTimeout(()=>nameInput.focus(),60);
+}
+function submitName(){
+  const n=nameInput.value.trim();
+  playerName=n.length>0?n.toUpperCase().substring(0,12):'PLAYER';
+  nameOverlay.classList.remove('active');
+  startPlay();
+}
+nameBtn.addEventListener('click',submitName);
+nameInput.addEventListener('keydown',e=>{
+  if(e.key==='Enter') {e.preventDefault();submitName();}
+  if(e.key==='Escape'){nameOverlay.classList.remove('active');}
+});
+
+// ═══════════════════════════════════════════════════════════
+//  INPUT
+// ═══════════════════════════════════════════════════════════
+const DMAP={
+  ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0},
+  w:{x:0,y:-1},s:{x:0,y:1},a:{x:-1,y:0},d:{x:1,y:0},
+  W:{x:0,y:-1},S:{x:0,y:1},A:{x:-1,y:0},D:{x:1,y:0}
+};
+function startPlay(){initGame();STATE='playing';lastStep=performance.now();startMusic();}
+
+document.addEventListener('keydown',e=>{
+  if(document.activeElement===nameInput) return;
+  const k=e.key;
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(k)) e.preventDefault();
+  if(k==='m'||k==='M'){musicEnabled=!musicEnabled;if(musicEnabled&&STATE==='playing')startMusic();else stopMusic();return;}
+  if(STATE==='menu')        {if(k===' '||k==='Enter')showNameEntry();else if(k==='l'||k==='L')STATE='leaderboard';return;}
+  if(STATE==='playing')     {const nd=DMAP[k];if(nd&&(nd.x!== -dir.x||nd.y!== -dir.y)){nextDir=nd;return;}if(k==='p'||k==='P'||k==='Escape')STATE='paused';return;}
+  if(STATE==='paused')      {if(k==='p'||k==='P'||k==='Escape'||k===' '){STATE='playing';lastStep=performance.now();}return;}
+  if(STATE==='dead')        {if(deathAnim<18)return;if(k===' '||k==='Enter')startPlay();else if(k==='Escape')STATE='menu';else if(k==='l'||k==='L')STATE='leaderboard';return;}
+  if(STATE==='leaderboard') {if(k==='Escape')STATE='menu';else if(k===' '||k==='Enter')showNameEntry();return;}
+});
+
+function handleActivate(){
+  if(nameOverlay.classList.contains('active')) return;
+  if(STATE==='menu')                  {showNameEntry();return;}
+  if(STATE==='dead'&&deathAnim>=18)   {startPlay();return;}
+  if(STATE==='paused')                {STATE='playing';lastStep=performance.now();return;}
+  if(STATE==='leaderboard')           {STATE='menu';return;}
+}
+canvas.addEventListener('click',handleActivate);
+
+let touch0=null;
+canvas.addEventListener('touchstart',e=>{e.preventDefault();touch0={x:e.touches[0].clientX,y:e.touches[0].clientY};handleActivate();},{passive:false});
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  if(!touch0||STATE!=='playing') return;
+  const dx=e.changedTouches[0].clientX-touch0.x,dy=e.changedTouches[0].clientY-touch0.y;
+  const ax=Math.abs(dx),ay=Math.abs(dy);
+  if(ax<12&&ay<12) return;
+  let nd;
+  if(ax>ay) nd=dx>0?{x:1,y:0}:{x:-1,y:0};
+  else      nd=dy>0?{x:0,y:1}:{x:0,y:-1};
+  if(nd.x!== -dir.x||nd.y!== -dir.y) nextDir=nd;
+  touch0=null;
+},{passive:false});
+
+// ── Boot ──────────────────────────────────────────────────
+best=loadBest(); initGame(); STATE='menu';
+</script>
+</body>
+</html>
